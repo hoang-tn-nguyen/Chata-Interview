@@ -8,14 +8,15 @@ import torch
 import torch.utils.data as data
 
 class DisflQA(data.Dataset):
-    def __init__(self, file_name='Datasets/Disfl-QA/train.json'):
+    def __init__(self, file_name='Datasets/Disfl-QA/train.json', vocab_file='Datasets/Disfl-QA/spm.model'):
         self.__input_data(file_name)
-        
+        self.vocab = spm.SentencePieceProcessor(model_file=vocab_file)
+
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, index):
-        return self.data[index]['disfluent'], self.data[index]['original']
+        return self.vocab.Encode(self.data[index]['disfluent']), self.vocab.Encode(self.data[index]['original'])
 
     def __input_data(self, file_name):
         try:
@@ -26,7 +27,4 @@ class DisflQA(data.Dataset):
 
         except Exception as e:
             print('Error occurred:', e)
-
-
-
 
