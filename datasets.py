@@ -16,7 +16,7 @@ class DisflQA(data.Dataset):
         return len(self.data)
 
     def __getitem__(self, index):
-        return self.vocab.Encode(self.data[index]['disfluent']), self.vocab.Encode(self.data[index]['original'])
+        return self.vocab.Encode(self.data[index]['disfluent'].lower()), self.vocab.Encode(self.data[index]['original'].lower())
 
     def __input_data(self, file_name):
         try:
@@ -27,4 +27,8 @@ class DisflQA(data.Dataset):
 
         except Exception as e:
             print('Error occurred:', e)
+
+if __name__ == '__main__':
+    my_data = DisflQA()
+    print(my_data.vocab.Decode(my_data[0][1]))
 
