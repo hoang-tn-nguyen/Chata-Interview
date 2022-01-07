@@ -25,6 +25,8 @@ class DisflQA(data.Dataset):
             json_file.close()
 
         except Exception as e:
-            print('Error occured:', e)
+            print('Error occurred:', e)
+
+
 
 
