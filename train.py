@@ -30,8 +30,8 @@ if __name__ == '__main__':
         max_len=100, return_len=False)
     val_loader = data.DataLoader(val_dataset, batch_size=8, num_workers=2)
 
-    vocab_emb = WordEmbedding(len(train_dataset.vocab), 256)
-    model = LSTM_ED(vocab_emb, emb_dim=256, hid_dim=256, n_layers=1, dropout=0.0).cuda()
+    vocab_emb = WordEmbedding(len(train_dataset.vocab), 512)
+    model = LSTM_ED(vocab_emb, emb_dim=512, hid_dim=512, n_layers=4, dropout=0.2).cuda()
     optimizer = optim.AdamW(model.parameters(), lr=3e-4)
     criterion = CELossShift(ignore_index=3)
     scaler = torch.cuda.amp.GradScaler()
@@ -57,13 +57,13 @@ if __name__ == '__main__':
             save('Checkpoints/lstm_ed.pt', model, optimizer, epoch=i, stats={'val_loss': best_loss, 'history': history})
         
     # --- Test part ---
-    test_dataset = DisflQA(
-        file_name='Datasets/Disfl-QA/test.json', 
-        vocab_file='Datasets/Disfl-QA/spm.model', 
-        max_len=100, return_len=False, infer=True)
-    test_loader = data.DataLoader(test_dataset, batch_size=8, num_workers=2)
+    # test_dataset = DisflQA(
+    #     file_name='Datasets/Disfl-QA/test.json', 
+    #     vocab_file='Datasets/Disfl-QA/spm.model', 
+    #     max_len=100, return_len=False, infer=True)
+    # test_loader = data.DataLoader(test_dataset, batch_size=8, num_workers=2)
 
     # load('Checkpoints/lstm_ed.pt', model)
-    _, outputs, targets = test(test_loader,model,device='cuda',return_results=True)
-    train_dataset.vocab.decode(outputs[3].numpy().tolist())
-    train_dataset.vocab.decode(targets[3].numpy().tolist())
+    # _, outputs, targets = test(test_loader,model,device='cuda',return_results=True)
+    # train_dataset.vocab.decode(outputs[3].numpy().tolist())
+    # train_dataset.vocab.decode(targets[3].numpy().tolist())

@@ -2,40 +2,6 @@ import torch
 import torch.nn as nn
 import math
 
-# Need to use data augmentation, transfer learning
-# Need to test model carefully using different validation techniques.
-# They mentioned something about (LSTM, CNN, RNN, seq2seq, BERT etc.)
-
-# Try LSTM to transform a sequence to another sequence.
-# Try Transformer.
-# Use the two models as baselines, try to find other papers that work on this dataset, see how good they perform. Compare with them.
-# Probably try to improve the model with something better.
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, max_len, embed_dim, dropout=0.0, use_fourier=True):
-        super().__init__()
-        assert embed_dim % 2 == 0
-        self.dropout = nn.Dropout(dropout)
-        self.use_fourier = use_fourier
-        
-        if use_fourier:
-            position = torch.arange(max_len).unsqueeze(1) 
-            div_term = torch.exp(torch.arange(0, embed_dim, 2) * (-math.log(10000.0) / embed_dim))
-            self.pos_enc = torch.zeros(1, max_len, embed_dim)
-            self.pos_enc[0, :, 0::2] = torch.sin(position * div_term)
-            self.pos_enc[0, :, 1::2] = torch.cos(position * div_term)
-        else:
-            self.pos_enc = nn.Embedding(max_len, embed_dim)
-
-    def forward(self, input):
-        if self.use_fourier:
-            input = input + self.pos_enc[:,:input.shape[1]].to(input.device)
-        else:
-            pos_idx = torch.arange(input.shape[1]).unsqueeze(0).repeat(input.shape[0],1).to(input.device) # (B,K)
-            pos_emb = self.pos_enc(pos_idx) # (B,K,E)
-            input = input + pos_emb # (B,K,E)
-        return self.dropout(input)
-
 class WordEmbedding(nn.Module):
     def __init__(self, vocab_size, embed_dim, dropout=0.0):
         super().__init__()
@@ -110,6 +76,118 @@ class LSTM_ED(nn.Module):
         hidden, cell = self.encoder(input)
         output = self.decoder(hidden, cell, output)
         return output
+
+# --- Transformer Baseline ---
+class PositionalEncoding(nn.Module):
+    def __init__(self, max_len, embed_dim, dropout=0.0, use_fourier=True):
+        super().__init__()
+        assert embed_dim % 2 == 0
+        self.dropout = nn.Dropout(dropout)
+        self.use_fourier = use_fourier
+        
+        if use_fourier:
+            position = torch.arange(max_len).unsqueeze(1) 
+            div_term = torch.exp(torch.arange(0, embed_dim, 2) * (-math.log(10000.0) / embed_dim))
+            self.pos_enc = torch.zeros(1, max_len, embed_dim)
+            self.pos_enc[0, :, 0::2] = torch.sin(position * div_term)
+            self.pos_enc[0, :, 1::2] = torch.cos(position * div_term)
+        else:
+            self.pos_enc = nn.Embedding(max_len, embed_dim)
+
+    def forward(self, input):
+        if self.use_fourier:
+            input = input + self.pos_enc[:,:input.shape[1]].to(input.device)
+        else:
+            pos_idx = torch.arange(input.shape[1]).unsqueeze(0).repeat(input.shape[0],1).to(input.device) # (B,K)
+            pos_emb = self.pos_enc(pos_idx) # (B,K,E)
+            input = input + pos_emb # (B,K,E)
+        return self.dropout(input)
+
+class FeedForward(nn.Module):
+    def __init__(self, embed_dim, fwd_dim, dropout):
+        super().__init__()
+        self.fwd_layer = nn.Sequential(
+            nn.Linear(embed_dim, fwd_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(fwd_dim, embed_dim))
+        self.normalize = nn.LayerNorm(embed_dim)
+
+    def forward(self, input, with_skip_connection=True):
+        output = self.fwd_layer(self.normalize(input))
+        if with_skip_connection:
+            output = output + input
+        return output # (B,S,E)
+
+class MultiheadAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, dropout):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            dropout=dropout)
+        self.normalize = nn.LayerNorm(embed_dim)
+
+    def forward(self, query, key, value, pad_mask=None, att_mask=None, with_skip_connection=True):
+        norm_query = self.normalize(query) # (B,Q,E)
+        norm_key = self.normalize(key) # (B,K,E)
+        norm_value = self.normalize(value) # (B,V,E)
+        
+        output, heatmap = self.attention(
+            norm_query.permute(1,0,2), 
+            norm_key.permute(1,0,2), 
+            norm_value.permute(1,0,2),
+            key_padding_mask=pad_mask, 
+            attn_mask=att_mask) # (Q,B,E), (B,Q,K)
+        output = output.permute(1,0,2) # (B,Q,E)
+
+        if with_skip_connection:
+            output = output + query # (B,Q,E)
+        return output, heatmap # (B,Q,E), (B,Q,K)
+
+class TransformerLayer(nn.Module): # A GPT-2 style encoder/decoder layer
+    def __init__(self, embed_dim, num_heads, fwd_dim, dropout):
+        super().__init__()
+        self.crs_att = MultiheadAttention(embed_dim, num_heads, dropout)
+        self.crs_fwd = FeedForward(embed_dim, fwd_dim, dropout)
+        
+    def forward(self, query, key, value, pad_mask=None, att_mask=None):
+        output, heatmap = self.crs_att(query,key,value,pad_mask,att_mask)
+        output = self.crs_fwd(output)
+        return output, heatmap
+
+class TransformerDecoderLayer(nn.Module): # A Transformer-style decoder layer
+    def __init__(self, embed_dim, num_heads, fwd_dim, dropout):
+        super().__init__()
+        self.slf_att = MultiheadAttention(embed_dim, num_heads, dropout)
+        self.crs_att = MultiheadAttention(embed_dim, num_heads, dropout)
+        self.crs_fwd = FeedForward(embed_dim, fwd_dim, dropout)
+
+    def forward(self, query, key, value, pad_mask=None, att_mask=None):
+        query, heatmap = self.slf_att(query, query, query, pad_mask, att_mask) # (B,O,E)
+        output, heatmap = self.crs_att(query, key, value) # (B,O,E)
+        output = self.crs_fwd(output) # (B,O,E)
+        return output, heatmap # (B,O,E)
+
+class Transformer(nn.Module): # GPT-2 blocks
+    def __init__(self, num_layers, embed_dim, num_heads, fwd_dim, dropout, in_features=None, max_positions=1000, use_fourier=True):
+        super().__init__()
+        self.transformer_layers = nn.ModuleList([
+            TransformerLayer(embed_dim,num_heads,fwd_dim,dropout) 
+            for _ in range(num_layers)])
+        
+        self.linear_layer = nn.Linear(in_features, embed_dim) if in_features != None else None
+        self.posit_embeds = PositionalEncoding(max_positions, embed_dim, dropout, use_fourier)
+        
+    def forward(self, input, pad_mask=None, att_mask=None):
+        if self.linear_layer != None:
+            input = self.linear_layer(input) # (B,K,F) --> (B,K,E)
+        input = self.posit_embeds(input) # (B,K,E)
+
+        output = input # (B,Q,E)
+        for layer in self.transformer_layers:
+            output, heatmap = layer(output, output, output, pad_mask, att_mask)
+        return output # (B,Q,E)
 
 if __name__ == '__main__':
     enc = WordEmbedding(1000, 128)
