@@ -106,7 +106,7 @@ class LSTM_ED(nn.Module):
         self.encoder = LSTM_Enc(word_emb, emb_dim, hid_dim, n_layers, dropout)
         self.decoder = LSTM_Dec(word_emb, emb_dim, hid_dim, n_layers, dropout)
         
-    def forward(self, input, output=None, input_len=None, sid=1):
+    def forward(self, input, output=None, input_len=None):
         hidden, cell = self.encoder(input)
         output = self.decoder(hidden, cell, output)
         return output
