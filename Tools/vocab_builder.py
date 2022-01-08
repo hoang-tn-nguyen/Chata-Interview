@@ -18,7 +18,16 @@ disfluent_file.close()
 
 # Build vocabulary with sentencepiece
 import glob
-spm.SentencePieceTrainer.Train(input=glob.glob('*.txt'), model_prefix='../Datasets/Disfl-QA/spm', vocab_size=5000, model_type='unigram')
+punc_list = ['`','~','!','@','#','$','%','^','&','*','-','_','+','=',
+             '\\','|',':',';','"','\'',',','.','?','/',
+             '(',')','{','}','[',']','<','>'] # punctuation
+spm.SentencePieceTrainer.Train(
+    input=glob.glob('*.txt'), 
+    model_prefix='../Datasets/Disfl-QA/spm', 
+    vocab_size=5000, 
+    model_type='unigram',
+    unk_id=0, bos_id=1, eos_id=2, pad_id=3,
+    user_defined_symbols=punc_list)
 
 # Test the model
 sp = spm.SentencePieceProcessor(model_file='../Datasets/DisFl-QA/spm.model')
