@@ -41,67 +41,79 @@ class WordEmbedding(nn.Module):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
         self.voc_emb = nn.Embedding(vocab_size, embed_dim)
-    
+        self.size = vocab_size
+
     def forward(self, input):
         output = self.voc_emb(input) # (B,L,E)
         return self.dropout(output)
 
 # --- LSTM Baseline ---
 class LSTM_Enc(nn.Module):
-    def __init__(self, emb_dim, hid_dim, n_layers, dropout):
+    def __init__(self, word_emb, emb_dim, hid_dim, n_layers, dropout):
         super().__init__()
+        self.embedding = word_emb
         self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, dropout = dropout, batch_first=True)
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, input):
         '''
-        input: (B,L,E) \n
+        input: (B,L) \n
         --- \n
-        outputs: (B,L,N*E) \n
-
-        
+        outputs: (B,L,E*D) \n
+        hidden: (N*D,B,E) \n
+        cell: (N*D,B,E) \n
+        where N is num_layers, D is num_directions \n
         '''
+        input = self.embedding(input)
         outputs, (hidden, cell) = self.rnn(input)
-        
-        #outputs = [src len, batch size, hid dim * n directions]
-        #hidden = [n layers * n directions, batch size, hid dim]
-        #cell = [n layers * n directions, batch size, hid dim]
         return hidden, cell
 
 class LSTM_Dec(nn.Module):
-    def __init__(self, emb_dim, hid_dim, n_layers, dropout):
+    def __init__(self, word_emb, emb_dim, hid_dim, n_layers, dropout):
         super().__init__()
-        self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, dropout = dropout)    
+        self.embedding = word_emb
+        self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, dropout = dropout, batch_first=True)    
         self.dropout = nn.Dropout(dropout)
-        
-    def forward(self, hidden, cell, input=None):
-        '''
-        hidden:
+        self.prediction = nn.Sequential(
+            nn.Linear(in_features=hid_dim, out_features=self.embedding.size),
+            nn.Softmax(dim=-1),
+        )
 
+    def forward(self, hidden, cell, output=None, max_len=100, sid=1):
         '''
-        output, (hidden, cell) = self.rnn(input, (hidden, cell))        
+        hidden: (N*D,B,E) \n
+        cell: (N*D,B,E) \n
+        output: (B,L) \n
+        where N is num_layers, D is num_directions \n
+        '''
+        if output == None:
+            bsz = hidden.shape[1]
+            output = torch.full((bsz, 1), fill_value=sid, device=hidden.device)
+            
+            for i in range(1,max_len):
+                out_emb, (hidden, cell) = self.rnn(self.embedding(output[:,-1].unsqueeze(-1)), (hidden, cell))
+                next_output = self.prediction(out_emb).max(dim=-1)[1]
+                output = torch.cat([output, next_output], dim=1)
+        else:
+            output = self.embedding(output)
+            output, (hidden, cell) = self.rnn(output, (hidden, cell))     
+            output = self.prediction(output)   
         return output
 
 class LSTM_ED(nn.Module):
-    def __init__(self, word_emb):
+    def __init__(self, word_emb, emb_dim, hid_dim, n_layers, dropout=0.1):
         super().__init__()
-        self.embedding = word_emb
-        self.encoder = LSTM_Enc()
-        self.decoder = LSTM_Dec()
-
-    def forward(self, input, input_len=None):
-        out = self.embedding(input) # (B,L,E)
-        out = self.encoder(out)
-        out = self.decoder(out)
-        return out
-
-class Transformer(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, input, output=None):
-        pass
+        self.encoder = LSTM_Enc(word_emb, emb_dim, hid_dim, n_layers, dropout)
+        self.decoder = LSTM_Dec(word_emb, emb_dim, hid_dim, n_layers, dropout)
+        
+    def forward(self, input, output=None, input_len=None, sid=1):
+        hidden, cell = self.encoder(input)
+        output = self.decoder(hidden, cell, output)
+        return output
 
 if __name__ == '__main__':
     enc = WordEmbedding(1000, 128)
-    enc(torch.randint(0,1000,(8,100))).shape
+    inp = torch.randint(0,1000,(8,100))
+    out = torch.randint(0,1000,(8,30))
+    model = LSTM_ED(enc, 128, 128, 1, 0.0)
+    model(inp).shape

@@ -4,7 +4,7 @@ import sentencepiece as spm
 import torch.utils.data as data
 
 class DisflQA(data.Dataset):
-    def __init__(self, file_name='Datasets/Disfl-QA/train.json', vocab_file='Datasets/Disfl-QA/spm.model', max_len=1000, return_len=False):
+    def __init__(self, file_name='Datasets/Disfl-QA/train.json', vocab_file='Datasets/Disfl-QA/spm.model', max_len=1000, return_len=False, infer=False):
         '''
         max_len: maximum output length
         '''
@@ -12,6 +12,7 @@ class DisflQA(data.Dataset):
         self.vocab = spm.SentencePieceProcessor(model_file=vocab_file)
         self.max_len = max_len
         self.return_len = return_len
+        self.infer = infer
 
     def __len__(self):
         return len(self.data)
@@ -31,7 +32,10 @@ class DisflQA(data.Dataset):
         if self.return_len:
             return (np_input, len(input)), (np_output, len(output))
         else:
-            return np_input, np_output
+            if self.infer: # During inference, the output is ignored
+                return np_input, np_output
+            else: # During training, the output is a part of the input
+                return (np_input, np_output), np_output
 
     def __input_data(self, file_name):
         try:
