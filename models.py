@@ -52,7 +52,14 @@ class LSTM_Bi_Enc(nn.Module):
         '''
         input = self.embedding(input)
         outputs, (hidden, cell) = self.rnn(input)
-        return self.fc_hid(hidden), self.fc_cel(cell)
+
+        hidden = hidden.view(-1, 2, hidden.shape[1], hidden.shape[2]).permute(0,2,1,3) # (N,B,D,E)
+        cell = cell.view(-1, 2, cell.shape[1], cell.shape[2]).permute(0,2,1,3) # (N,B,D,E)
+        hidden = hidden.reshape(hidden.shape[0], hidden.shape[1], -1) # (N,B,D*E)
+        cell = cell.reshape(cell.shape[0], cell.shape[1], -1) # (N,B,D*E)
+        
+        hidden, cell = self.fc_hid(hidden), self.fc_cel(cell)
+        return hidden, cell
 
 class LSTM_Dec(nn.Module):
     def __init__(self, word_emb, emb_dim, hid_dim, n_layers, dropout):
@@ -90,7 +97,7 @@ class LSTM_ED(nn.Module):
     def __init__(self, src_vocab_emb, tgt_vocab_emb, emb_dim, hid_dim, n_layers, dropout=0.1, bidirectional=True):
         super().__init__()
         if bidirectional:
-            self.encoder = LSTM_Enc(src_vocab_emb, emb_dim, hid_dim, n_layers, dropout)
+            self.encoder = LSTM_Bi_Enc(src_vocab_emb, emb_dim, hid_dim, n_layers, dropout)
         else:
             self.encoder = LSTM_Enc(src_vocab_emb, emb_dim, hid_dim, n_layers, dropout)
         self.decoder = LSTM_Dec(tgt_vocab_emb, emb_dim, hid_dim, n_layers, dropout)
@@ -219,13 +226,13 @@ class Transformer(nn.Module): # GPT-2 blocks
         
     def forward(self, input, pad_mask=None, att_mask=None):
         if self.linear_layer != None:
-            input = self.linear_layer(input) # (B,K,F) --> (B,K,E)
-        input = self.posit_embeds(input) # (B,K,E)
+            input = self.linear_layer(input) # (B,L,F) --> (B,L,E)
+        input = self.posit_embeds(input) # (B,L,E)
 
-        output = input # (B,Q,E)
+        output = input # (B,L,E)
         for layer in self.transformer_layers:
             output, heatmap = layer(output, output, output, pad_mask, att_mask)
-        return output # (B,Q,E)
+        return output # (B,L,E)
 
 class Perceiver(nn.Module): # Perceiver encoder blocks
     def __init__(self, num_queries, num_layers, embed_dim, num_heads, fwd_dim, dropout, in_features=None, max_positions=10000, use_fourier=True):
@@ -301,10 +308,10 @@ class Performer(nn.Module): # PERceiver encoder + TransFORMER decoder
         return output # (B,O,E)
 
 class TextGenerator(nn.Module):
-    def __init__(self, performer, word_emb, embed_dim):
+    def __init__(self, performer, embed_dim, word_embed=None):
         super().__init__()
-        self.performer = performer
-        self.embedding = word_emb
+        self.performer = performer # The Perceiver input + Transformer output
+        self.embedding = word_embed # Turn input sequence (B,*) to (B,*,E)
         self.prediction = nn.Sequential(
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, self.embedding.size),
@@ -313,20 +320,19 @@ class TextGenerator(nn.Module):
 
     def forward(self, input, output=None, in_pad_mask=None, s_id=1, e_id=2, p_id=3, max_len=100, input_to_perceiver=True):
         '''
-        input (B,I,E)
-        output (B,O)
+        input (B,I,E): Input sequence
+        output (B,O): Output sequence
         '''
-        
-        if output == None:
+        if output == None:            
             return self.generate(input, in_pad_mask, s_id, e_id, p_id, max_len)
         else:
             out_pad_mask = (output == p_id) # (B,O)
             out_att_mask = self.generate_square_subsequent_mask(output.shape[1]).to(output.device) # (O,O)
-            output = self.embedding(output) # (B,O,E)
-            
+            output = self.embedding(output) # (B,O) --> (B,O,E)
+
             output = self.performer(
-                input,
-                output,
+                input, # (B,I,E)
+                output, # (B,O,E)
                 in_pad_mask = in_pad_mask,
                 out_pad_mask = out_pad_mask,
                 out_att_mask = out_att_mask,
@@ -337,9 +343,13 @@ class TextGenerator(nn.Module):
             return output # (B,O,C)
 
     def generate(self, input, in_pad_mask=None, s_id=1, e_id=2, p_id=3, max_len=100):
+        '''
+        input (B,I,E): Embedded input sequence \n
+        in_pad_mask (B,I): Pad mask for input sequence \n
+        '''
         input = self.performer.perceiver(input, pad_mask=in_pad_mask) # (B,I,E)
-        output = torch.ones(input.shape[0], 1, dtype=torch.long, device=input.device) * s_id # (B,1)
-        for _ in range(max_len-1):
+        output = torch.full((input.shape[0],1), fill_value=s_id, dtype=torch.long, device=input.device) # (B,1)
+        for _ in range(1,max_len):
             prob = self.forward(input, output, in_pad_mask, s_id, e_id, p_id, max_len, False) # (B,O,C)
             amax = prob[:,-1,:].max(dim=-1)[1].unsqueeze(1) # (B,1)
             output = torch.cat([output, amax], dim=-1) # (B,O+1)
@@ -350,13 +360,29 @@ class TextGenerator(nn.Module):
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
         return mask
 
+class MachineTranslationModel(nn.Module):
+    def __init__(self, src_vocab_emb, tgt_vocab_emb, latent_embed, embed_dim, ffwd_dim, num_heads, num_enc_layers, num_dec_layers, dropout):
+        super().__init__()
+        self.embedding = src_vocab_emb
+        perceiver = Perceiver(latent_embed, num_enc_layers, embed_dim, num_heads, ffwd_dim, dropout)
+        performer = Performer(perceiver, embed_dim, num_heads, ffwd_dim, dropout, num_dec_layers)
+        self.generator = TextGenerator(performer, embed_dim, tgt_vocab_emb)
+
+    def forward(self, input, output=None, in_pad_mask=None, s_id=1, e_id=2, p_id=3, max_len=100):
+        in_pad_mask = (input == p_id)
+        input = self.embedding(input)
+        return self.generator(input, output, in_pad_mask, s_id, e_id, p_id, max_len)
+
 if __name__ == '__main__':
     enc = WordEmbedding(1000, 128)
     inp = torch.randint(0,1000,(8,100))
     out = torch.randint(0,1000,(8,30))
-    model = LSTM_ED(enc, 128, 128, 1, 0.0)
+    model = LSTM_ED(enc, enc, 128, 128, 4, 0.2, bidirectional=True)
     model(inp).shape
 
-    perceiver = Perceiver(8, 6, 128, 1, 256)
-    performer = Performer()
-    model = TextGenerator()
+    enc = WordEmbedding(1000, 128)
+    dec = WordEmbedding(1000, 128)
+    model = MachineTranslationModel(enc, dec, 100, 128, 256, 1, 6, 6, 0.1)
+    model(inp).shape
+
+

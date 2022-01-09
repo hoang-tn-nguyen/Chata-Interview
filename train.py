@@ -7,7 +7,7 @@ import torch.optim as optim
 import torch.utils.data as data
 
 from datasets import DisflQA
-from models import LSTM_ED, WordEmbedding
+from models import MachineTranslationModel, LSTM_ED, WordEmbedding
 from utils import train, test, save, load
 from losses import CELossShift
 
@@ -16,6 +16,8 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["OMP_NUM_THREADS"] = "1"
 torch.set_num_threads(1)
 torch.manual_seed(seed=0)
+
+MODEL_NAME = 'PERFORMER'
 
 if __name__ == '__main__':
     train_dataset = DisflQA(
@@ -30,7 +32,14 @@ if __name__ == '__main__':
 
     src_vocab_emb = WordEmbedding(len(train_dataset.src_vocab), 256)
     tgt_vocab_emb = WordEmbedding(len(train_dataset.tgt_vocab), 256)
-    model = LSTM_ED(src_vocab_emb, tgt_vocab_emb, emb_dim=256, hid_dim=256, n_layers=2, dropout=0.2, bidirectional=True).cuda()
+    
+    if MODEL_NAME == 'LSTM':
+        model = LSTM_ED(src_vocab_emb, tgt_vocab_emb, emb_dim=256, hid_dim=256, n_layers=2, dropout=0.2, bidirectional=True).cuda()
+    elif MODEL_NAME == 'PERFORMER':
+        model = MachineTranslationModel(src_vocab_emb, tgt_vocab_emb, 100, 256, 256, 1, 6, 6, 0.1).cuda()
+    else:
+        raise ValueError('Unknown MODEL_NAME')
+
     optimizer = optim.AdamW(model.parameters(), lr=3e-4)
     criterion = CELossShift(ignore_index=3)
     scaler = torch.cuda.amp.GradScaler()
@@ -43,7 +52,7 @@ if __name__ == '__main__':
     }
     
     if False:
-        start_epoch, stats = load('Checkpoints/lstm_bi_ed.pt', model, optimizer)
+        start_epoch, stats = load('Checkpoints/{}.pt'.format(MODEL_NAME), model, optimizer)
         best_loss = stats['val_loss']
         history = history
 
@@ -59,7 +68,7 @@ if __name__ == '__main__':
 
         if val_loss < best_loss:
             best_loss = val_loss
-            save('Checkpoints/lstm_bi_ed.pt', model, optimizer, epoch=i, stats={'val_loss': best_loss, 'history': history})
+            save('Checkpoints/{}.pt'.format(MODEL_NAME), model, optimizer, epoch=i, stats={'val_loss': best_loss, 'history': history})
         
     # --- Test part ---
     test_dataset = DisflQA(
@@ -67,7 +76,9 @@ if __name__ == '__main__':
         max_len=100, return_len=False, infer=True)
     test_loader = data.DataLoader(test_dataset, batch_size=8, num_workers=2)
 
-    
     _, outputs, targets = test(test_loader,model,device='cuda',return_results=True)
-    train_dataset.tgt_vocab.decode(outputs[11].numpy().tolist())
-    train_dataset.tgt_vocab.decode(targets[11].numpy().tolist())
+    train_dataset.tgt_vocab.decode(outputs[20].numpy().tolist())
+    train_dataset.tgt_vocab.decode(targets[20].numpy().tolist())
+    train_dataset.src_vocab.decode(test_dataset[6][0].tolist())
+    test_dataset[6][1]
+    train_dataset.tgt_vocab.decode([671])
