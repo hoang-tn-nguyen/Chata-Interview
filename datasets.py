@@ -4,12 +4,19 @@ import sentencepiece as spm
 import torch.utils.data as data
 
 class DisflQA(data.Dataset):
-    def __init__(self, file_name='Datasets/Disfl-QA/train.json', vocab_file='Datasets/Disfl-QA/spm.model', max_len=1000, return_len=False, infer=False):
+    def __init__(self, 
+                file_name='Datasets/Disfl-QA/train.json', 
+                vocab_file='Datasets/Disfl-QA/spm.model', 
+                src_vocab_file='Datasets/Disfl-QA/spm_disfluent.model', 
+                tgt_vocab_file='Datasets/Disfl-QA/spm_original.model',
+                max_len=100, return_len=False, infer=False):
         '''
         max_len: maximum output length
         '''
         self.__input_data(file_name)
         self.vocab = spm.SentencePieceProcessor(model_file=vocab_file)
+        self.src_vocab = spm.SentencePieceProcessor(model_file=src_vocab_file)
+        self.tgt_vocab = spm.SentencePieceProcessor(model_file=tgt_vocab_file)
         self.max_len = max_len
         self.return_len = return_len
         self.infer = infer
@@ -18,14 +25,14 @@ class DisflQA(data.Dataset):
         return len(self.data)
 
     def __getitem__(self, index):
-        input = self.vocab.Encode(self.data[index]['disfluent'].lower())
-        output = self.vocab.Encode(self.data[index]['original'].lower())
+        input = self.src_vocab.Encode(self.data[index]['disfluent'].lower())
+        output = self.tgt_vocab.Encode(self.data[index]['original'].lower())
         
         # cast to a numpy array with the same length
         input =  [self.vocab.bos_id()] + input + [self.vocab.eos_id()]
         output =  [self.vocab.bos_id()] + output + [self.vocab.eos_id()]
-        np_input = np.ones(self.max_len, dtype=np.int64) * self.vocab.pad_id()
-        np_output = np.ones(self.max_len, dtype=np.int64) * self.vocab.pad_id()
+        np_input = np.ones(self.max_len, dtype=np.int64) * self.src_vocab.pad_id()
+        np_output = np.ones(self.max_len, dtype=np.int64) * self.tgt_vocab.pad_id()
         np_input[:min(len(input), self.max_len)] = input[:min(len(input), self.max_len)]
         np_output[:min(len(output), self.max_len)] = output[:min(len(output), self.max_len)]
         
@@ -48,6 +55,6 @@ class DisflQA(data.Dataset):
             print('Error occurred:', e)
 
 if __name__ == '__main__':
-    my_data = DisflQA(return_len=True)
-    print(my_data.vocab.Decode(my_data[0][1].tolist()))
+    my_data = DisflQA()
+    print(my_data.tgt_vocab.Decode(my_data[0][1].tolist()))
 

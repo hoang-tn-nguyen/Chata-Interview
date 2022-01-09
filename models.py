@@ -19,7 +19,6 @@ class LSTM_Enc(nn.Module):
         super().__init__()
         self.embedding = word_emb
         self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, dropout = dropout, batch_first=True)
-        self.dropout = nn.Dropout(dropout)
         
     def forward(self, input):
         '''
@@ -33,6 +32,27 @@ class LSTM_Enc(nn.Module):
         input = self.embedding(input)
         outputs, (hidden, cell) = self.rnn(input)
         return hidden, cell
+
+class LSTM_Bi_Enc(nn.Module):
+    def __init__(self, word_emb, emb_dim, hid_dim, n_layers, dropout):
+        super().__init__()
+        self.embedding = word_emb
+        self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, dropout = dropout, bidirectional=True, batch_first=True)
+        self.fc_hid = nn.Linear(hid_dim * 2, hid_dim)
+        self.fc_cel = nn.Linear(hid_dim * 2, hid_dim)
+        
+    def forward(self, input):
+        '''
+        input: (B,L) \n
+        --- \n
+        outputs: (B,L,E*D) \n
+        hidden: (N*D,B,E) \n
+        cell: (N*D,B,E) \n
+        where N is num_layers, D is num_directions \n
+        '''
+        input = self.embedding(input)
+        outputs, (hidden, cell) = self.rnn(input)
+        return self.fc_hid(hidden), self.fc_cel(cell)
 
 class LSTM_Dec(nn.Module):
     def __init__(self, word_emb, emb_dim, hid_dim, n_layers, dropout):
@@ -67,10 +87,13 @@ class LSTM_Dec(nn.Module):
         return output
 
 class LSTM_ED(nn.Module):
-    def __init__(self, word_emb, emb_dim, hid_dim, n_layers, dropout=0.1):
+    def __init__(self, src_vocab_emb, tgt_vocab_emb, emb_dim, hid_dim, n_layers, dropout=0.1, bidirectional=True):
         super().__init__()
-        self.encoder = LSTM_Enc(word_emb, emb_dim, hid_dim, n_layers, dropout)
-        self.decoder = LSTM_Dec(word_emb, emb_dim, hid_dim, n_layers, dropout)
+        if bidirectional:
+            self.encoder = LSTM_Enc(src_vocab_emb, emb_dim, hid_dim, n_layers, dropout)
+        else:
+            self.encoder = LSTM_Enc(src_vocab_emb, emb_dim, hid_dim, n_layers, dropout)
+        self.decoder = LSTM_Dec(tgt_vocab_emb, emb_dim, hid_dim, n_layers, dropout)
         
     def forward(self, input, output=None, input_len=None):
         hidden, cell = self.encoder(input)
@@ -156,6 +179,21 @@ class TransformerLayer(nn.Module): # A GPT-2 style encoder/decoder layer
         output = self.crs_fwd(output)
         return output, heatmap
 
+class PerceiverLayer(nn.Module): # A Perceiver-style encoder layer
+    def __init__(self, embed_dim, num_heads, fwd_dim, dropout):
+        super().__init__()
+        self.crs_att = MultiheadAttention(embed_dim, num_heads, dropout)
+        self.crs_fwd = FeedForward(embed_dim, fwd_dim, dropout)
+        self.slf_att = MultiheadAttention(embed_dim, num_heads, dropout)
+        self.slf_fwd = FeedForward(embed_dim, fwd_dim, dropout)
+        
+    def forward(self, query, key, value, pad_mask=None, att_mask=None):
+        output, heatmap = self.crs_att(query,key,value,pad_mask,att_mask)
+        output = self.crs_fwd(output)
+        output = self.slf_att(output,output,output)[0]
+        output = self.slf_fwd(output)
+        return output, heatmap
+
 class TransformerDecoderLayer(nn.Module): # A Transformer-style decoder layer
     def __init__(self, embed_dim, num_heads, fwd_dim, dropout):
         super().__init__()
@@ -189,9 +227,136 @@ class Transformer(nn.Module): # GPT-2 blocks
             output, heatmap = layer(output, output, output, pad_mask, att_mask)
         return output # (B,Q,E)
 
+class Perceiver(nn.Module): # Perceiver encoder blocks
+    def __init__(self, num_queries, num_layers, embed_dim, num_heads, fwd_dim, dropout, in_features=None, max_positions=10000, use_fourier=True):
+        super().__init__()
+        perceiver_layer_0 = PerceiverLayer(embed_dim,num_heads,fwd_dim,dropout) # avoid overfitting
+        perceiver_layer_i = PerceiverLayer(embed_dim,num_heads,fwd_dim,dropout) # share params across all layers
+        self.perceiver_layers = nn.ModuleList([
+            perceiver_layer_i if i else perceiver_layer_0 
+            for i in range(num_layers)])
+        
+        self.num_queries = num_queries
+        self.query_embeds = nn.Embedding(self.num_queries, embed_dim)
+
+        self.linear_layer = nn.Linear(in_features, embed_dim) if in_features != None else None
+        self.posit_embeds = PositionalEncoding(max_positions, embed_dim, dropout, use_fourier)
+        
+    def forward(self, input, pad_mask=None, att_mask=None):
+        if self.linear_layer != None:
+            input = self.linear_layer(input) # (B,K,F) --> (B,K,E)
+        input = self.posit_embeds(input) # (B,K,E)
+
+        qry_idx = torch.arange(self.num_queries).unsqueeze(0).repeat(input.shape[0],1).to(input.device) # (B,Q)
+        qry_emb = self.query_embeds(qry_idx) # (B,Q,E)
+
+        output = qry_emb # (B,Q,E)
+        for layer in self.perceiver_layers:
+            output, heatmap = layer(output, input, input, pad_mask, att_mask)
+        return output # (B,Q,E)
+
+class PerceiverIO(nn.Module): # Perceiver model with decoder
+    def __init__(self, num_outputs, num_queries, num_layers, embed_dim, num_heads, fwd_dim, dropout, in_features=None, out_features=None, max_positions=10000, use_fourier=True):
+        super().__init__()
+        self.perceiver = Perceiver(num_queries, num_layers, embed_dim, num_heads, fwd_dim, dropout, in_features, max_positions, use_fourier)
+        
+        self.out_att = MultiheadAttention(embed_dim, num_heads, dropout)
+        self.out_fwd = FeedForward(embed_dim, fwd_dim, dropout)
+        self.out_mlp = nn.Sequential(
+            nn.LayerNorm(embed_dim), # Remeber to normalize the output!
+            nn.Linear(embed_dim, out_features),
+        )
+
+        self.num_outputs = num_outputs
+        self.out_embeds = nn.Embedding(num_outputs, embed_dim)
+        
+    def forward(self, input, pad_mask=None, att_mask=None):
+        input = self.perceiver(input, pad_mask, att_mask) # (B,Q,E)
+        
+        out_idx = torch.arange(self.num_outputs).unsqueeze(0).repeat(input.shape[0],1).to(input.device) # (B,O)
+        out_emb = self.out_embeds(out_idx) # (B,O,E)
+        
+        output, heatmap = self.out_att(out_emb, input, input, pad_mask, att_mask, with_skip_connection=False) # (B,O,E)
+        output = self.out_fwd(output) # (B,O,E)
+        output = self.out_mlp(output) # (B,O,C)
+        return output.squeeze(1) # (B,O,C) or (B,C) if O == 1
+
+class Performer(nn.Module): # PERceiver encoder + TransFORMER decoder
+    def __init__(self, perceiver, embed_dim, num_heads, fwd_dim, dropout, num_layers, max_positions=10000, use_fourier=True):
+        super().__init__()
+        self.perceiver = perceiver
+        self.decoder_layers = nn.ModuleList([
+            TransformerDecoderLayer(embed_dim, num_heads, fwd_dim, dropout)
+            for _ in range(num_layers)
+        ])
+        self.posit_embeds = PositionalEncoding(max_positions, embed_dim, dropout, use_fourier)
+
+    def forward(self, input, output, in_pad_mask=None, in_att_mask=None, out_pad_mask=None, out_att_mask=None, input_to_perceiver=True):
+        if input_to_perceiver:
+            input = self.perceiver(input, in_pad_mask, in_att_mask) # (B,Q,E)
+        output = self.posit_embeds(output) # (B,O,E)
+
+        for layer in self.decoder_layers:
+            output, heatmap = layer(output,input,input,out_pad_mask,out_att_mask)
+        return output # (B,O,E)
+
+class TextGenerator(nn.Module):
+    def __init__(self, performer, word_emb, embed_dim):
+        super().__init__()
+        self.performer = performer
+        self.embedding = word_emb
+        self.prediction = nn.Sequential(
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, self.embedding.size),
+            nn.Softmax(dim=-1)
+        )
+
+    def forward(self, input, output=None, in_pad_mask=None, s_id=1, e_id=2, p_id=3, max_len=100, input_to_perceiver=True):
+        '''
+        input (B,I,E)
+        output (B,O)
+        '''
+        
+        if output == None:
+            return self.generate(input, in_pad_mask, s_id, e_id, p_id, max_len)
+        else:
+            out_pad_mask = (output == p_id) # (B,O)
+            out_att_mask = self.generate_square_subsequent_mask(output.shape[1]).to(output.device) # (O,O)
+            output = self.embedding(output) # (B,O,E)
+            
+            output = self.performer(
+                input,
+                output,
+                in_pad_mask = in_pad_mask,
+                out_pad_mask = out_pad_mask,
+                out_att_mask = out_att_mask,
+                input_to_perceiver = input_to_perceiver,
+            ) # (B,O,E)
+
+            output = self.prediction(output) # (B,O,C)
+            return output # (B,O,C)
+
+    def generate(self, input, in_pad_mask=None, s_id=1, e_id=2, p_id=3, max_len=100):
+        input = self.performer.perceiver(input, pad_mask=in_pad_mask) # (B,I,E)
+        output = torch.ones(input.shape[0], 1, dtype=torch.long, device=input.device) * s_id # (B,1)
+        for _ in range(max_len-1):
+            prob = self.forward(input, output, in_pad_mask, s_id, e_id, p_id, max_len, False) # (B,O,C)
+            amax = prob[:,-1,:].max(dim=-1)[1].unsqueeze(1) # (B,1)
+            output = torch.cat([output, amax], dim=-1) # (B,O+1)
+        return output # (B,O)
+
+    def generate_square_subsequent_mask(self, sz):
+        mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+        return mask
+
 if __name__ == '__main__':
     enc = WordEmbedding(1000, 128)
     inp = torch.randint(0,1000,(8,100))
     out = torch.randint(0,1000,(8,30))
     model = LSTM_ED(enc, 128, 128, 1, 0.0)
     model(inp).shape
+
+    perceiver = Perceiver(8, 6, 128, 1, 256)
+    performer = Performer()
+    model = TextGenerator()

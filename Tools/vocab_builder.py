@@ -21,15 +21,34 @@ import glob
 punc_list = ['`','~','!','@','#','$','%','^','&','*','-','_','+','=',
              '\\','|',':',';','"','\'',',','.','?','/',
              '(',')','{','}','[',']','<','>'] # punctuation
+
+spm.SentencePieceTrainer.Train(
+    input='disfluent.txt', 
+    model_prefix='../Datasets/Disfl-QA/spm_disfluent', 
+    vocab_size=1000, 
+    model_type='unigram',
+    unk_id=0, bos_id=1, eos_id=2, pad_id=3,
+    user_defined_symbols=punc_list)
+
+spm.SentencePieceTrainer.Train(
+    input='original.txt', 
+    model_prefix='../Datasets/Disfl-QA/spm_original', 
+    vocab_size=1000, 
+    model_type='unigram',
+    unk_id=0, bos_id=1, eos_id=2, pad_id=3,
+    user_defined_symbols=punc_list)
+
 spm.SentencePieceTrainer.Train(
     input=glob.glob('*.txt'), 
     model_prefix='../Datasets/Disfl-QA/spm', 
-    vocab_size=5000, 
+    vocab_size=1000, 
     model_type='unigram',
     unk_id=0, bos_id=1, eos_id=2, pad_id=3,
     user_defined_symbols=punc_list)
 
 # Test the model
-sp = spm.SentencePieceProcessor(model_file='../Datasets/DisFl-QA/spm.model')
-enc = sp.Encode('what do unstable isotope studies indicate?')
-sp.Decode(enc)
+sp_dis = spm.SentencePieceProcessor(model_file='../Datasets/DisFl-QA/spm_disfluent.model')
+sp_ori = spm.SentencePieceProcessor(model_file='../Datasets/DisFl-QA/spm_original.model')
+sp_all = spm.SentencePieceProcessor(model_file='../Datasets/DisFl-QA/spm.model')
+enc = sp_all.Encode('what do unstable isotope studies indicate?')
+sp_all.Decode(enc)
