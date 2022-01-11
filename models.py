@@ -66,8 +66,8 @@ class LSTM_Dec(nn.Module):
         super().__init__()
         self.embedding = word_emb
         self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, dropout = dropout, batch_first=True)    
-        self.dropout = nn.Dropout(dropout)
         self.prediction = nn.Sequential(
+            nn.LayerNorm(emb_dim), # Without this layer, the model was very bad.
             nn.Linear(in_features=hid_dim, out_features=self.embedding.size),
             nn.Softmax(dim=-1),
         )
@@ -79,6 +79,7 @@ class LSTM_Dec(nn.Module):
         output: (B,L) \n
         where N is num_layers, D is num_directions \n
         '''
+
         if output == None:
             bsz = hidden.shape[1]
             output = torch.full((bsz, 1), fill_value=sid, device=hidden.device)

@@ -11,7 +11,9 @@ class DisflQA(data.Dataset):
                 tgt_vocab_file='Datasets/Disfl-QA/spm_original.model',
                 max_len=100, return_len=False, infer=False):
         '''
-        max_len: maximum output length
+        max_len: maximum output length \n
+        return_len: return the length of sequences \n
+        infer: a special flag for inference phase (no output is used as input for models) \n
         '''
         self.__input_data(file_name)
         self.vocab = spm.SentencePieceProcessor(model_file=vocab_file)
@@ -40,8 +42,12 @@ class DisflQA(data.Dataset):
             return (np_input, len(input)), (np_output, len(output))
         else:
             if self.infer: # During inference, the output is ignored
+                # Input: np_input
+                # Output: np_output
                 return np_input, np_output
             else: # During training, the output is a part of the input
+                # Input: (np_input, np_output)
+                # Output: np_output
                 return (np_input, np_output), np_output
 
     def __input_data(self, file_name):
