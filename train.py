@@ -69,8 +69,8 @@ if __name__ == '__main__':
         # Lazy update the graph
         plt.ylabel('Loss Value')
         plt.xlabel('Number of Epoch') 
-        plt.plot(np.arange(len(history['train_loss'])), history['train_loss'], marker='o', linestyle='--', color='g', label='Train Loss')
-        plt.plot(np.arange(len(history['val_loss'])), history['val_loss'], marker='x', linestyle='--', color='r', label='Validation Loss')
+        plt.plot(np.arange(len(history['train_loss'])), history['train_loss'], linestyle='--', color='g', label='Train Loss')
+        plt.plot(np.arange(len(history['val_loss'])), history['val_loss'], linestyle='--', color='r', label='Validation Loss')
         plt.legend() 
         plt.savefig('Results/Loss_{}.png'.format(MODEL_NAME))
         plt.show()
